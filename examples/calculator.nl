@@ -3,45 +3,56 @@ import std.string;
 import std.events;
 
 class Token {
-    kind;
-    text;
-    value = 0;
+    String kind;
+    String text;
+    Number value = 0;
+}
+
+class TokenList {
+    List<Token> items = [];
 }
 
 class Lexer {
-    input;
-    position = 0;
-    tokens = [];
+    String input;
+    Number position = 0;
+    TokenList output = TokenList {};
 
-    event token(token);
-    event error(message, position);
+    event scanned(TokenList tokens);
+    event token(Token token);
+    event failed(String message, Number position);
 
-    current() {
+    current(out Char ch) {
         if position >= input.len() {
-            return '\0';
+            ch = '\0';
+        } else {
+            ch = input[position];
         }
-
-        return input[position];
     }
 
     advance() {
         position = position + 1;
     }
 
-    scanNumber() {
+    scanNumber(out Token token) {
         let start = position;
+        let ch = '\0';
 
-        while current().isDigit() || current() == '.' {
+        current(out ch);
+
+        while ch.isDigit() || ch == '.' {
             advance();
+            current(out ch);
         }
 
         let text = input.slice(start, position);
-        return Token { kind = "number", text, value = text.toFloat() };
+        token = Token { kind = "number", text, value = text.toFloat() };
     }
 
     scan() {
+        let ch = '\0';
+
         while position < input.len() {
-            let ch = current();
+            current(out ch);
 
             if ch.isWhitespace() {
                 advance();
@@ -49,222 +60,285 @@ class Lexer {
             }
 
             if ch.isDigit() {
-                let number = scanNumber();
-                tokens.push(number);
+                let number = Token {};
+                scanNumber(out number);
+                output.items.push(number);
                 this.token(number);
                 continue;
             }
 
             if ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '(' || ch == ')' {
                 let operator = Token { kind = ch.toString(), text = ch.toString() };
-                tokens.push(operator);
+                output.items.push(operator);
                 this.token(operator);
                 advance();
                 continue;
             }
 
             let message = "unexpected character '" + ch + "'";
-            this.error(message, position);
-            events.emit("calculator.error", { message, position });
+            this.failed(message, position);
+            events.emit("calculator.failed", { message, position });
             advance();
         }
 
-        tokens.push(Token { kind = "eof", text = "" });
-        return tokens;
+        output.items.push(Token { kind = "eof", text = "" });
+        this.scanned(output);
     }
 }
 
 interface Expr {
-    eval() -> number;
+    event evaluated(Number value);
+    evaluate();
 }
 
 class NumberExpr : Expr {
-    value;
+    Number value;
 
-    eval() {
-        return value;
+    evaluate() {
+        this.evaluated(value);
     }
 }
 
 class UnaryExpr : Expr {
-    operator;
-    right;
+    String operator;
+    Expr right;
 
-    eval() {
-        let value = right.eval();
+    event evaluated(Number value);
 
-        if operator == "-" {
-            return -value;
-        }
+    evaluate() {
+        right.evaluated += fn(Number value) {
+            if operator == "-" {
+                this.evaluated(-value);
+            } else {
+                this.evaluated(value);
+            }
+        } once;
 
-        return value;
+        right.evaluate();
     }
 }
 
 class BinaryExpr : Expr {
-    left;
-    operator;
-    right;
+    Expr left;
+    String operator;
+    Expr right;
 
-    eval() {
-        let a = left.eval();
-        let b = right.eval();
+    event evaluated(Number value);
+    event failed(String message);
 
-        if operator == "+" {
-            return a + b;
-        }
+    evaluate() {
+        left.evaluated += fn(Number a) {
+            right.evaluated += fn(Number b) {
+                if operator == "+" {
+                    this.evaluated(a + b);
+                } else if operator == "-" {
+                    this.evaluated(a - b);
+                } else if operator == "*" {
+                    this.evaluated(a * b);
+                } else if operator == "/" {
+                    if b == 0 {
+                        this.failed("division by zero");
+                        events.emit("calculator.failed", { message = "division by zero" });
+                    } else {
+                        this.evaluated(a / b);
+                    }
+                } else {
+                    this.failed("unknown binary operator");
+                }
+            } once;
 
-        if operator == "-" {
-            return a - b;
-        }
+            right.evaluate();
+        } once;
 
-        if operator == "*" {
-            return a * b;
-        }
-
-        if operator == "/" {
-            if b == 0 {
-                events.emit("calculator.error", { message = "division by zero", position = 0 });
-                fail "division by zero";
-            }
-
-            return a / b;
-        }
-
-        fail "unknown binary operator";
+        left.evaluate();
     }
 }
 
 class Parser {
-    tokens;
-    position = 0;
+    TokenList tokens;
+    Number position = 0;
 
-    event error(message, token);
+    event parsed(Expr expression);
+    event failed(String message, Token token);
 
-    current() {
-        return tokens[position];
+    current(out Token token) {
+        token = tokens.items[position];
     }
 
-    match(kind) {
-        if current().kind == kind {
+    match(String kind, out Bool matched) {
+        let token = Token {};
+        current(out token);
+
+        if token.kind == kind {
             position = position + 1;
-            return true;
+            matched = true;
+        } else {
+            matched = false;
         }
-
-        return false;
     }
 
-    expect(kind) {
-        if match(kind) {
-            return;
-        }
+    expect(String kind, out Bool ok) {
+        match(kind, out ok);
 
-        let message = "expected '" + kind + "', got '" + current().text + "'";
-        this.error(message, current());
-        fail message;
+        if !ok {
+            let token = Token {};
+            current(out token);
+            let message = "expected '" + kind + "', got '" + token.text + "'";
+            this.failed(message, token);
+        }
     }
 
     parse() {
-        let expression = parseExpression();
-        expect("eof");
-        return expression;
+        let expression = NumberExpr { value = 0 };
+        parseExpression(out expression);
+
+        let ok = false;
+        expect("eof", out ok);
+
+        if ok {
+            this.parsed(expression);
+        }
     }
 
-    parseExpression() {
-        return parseAdditive();
+    parseExpression(out Expr expression) {
+        parseAdditive(out expression);
     }
 
-    parseAdditive() {
-        let expression = parseMultiplicative();
+    parseAdditive(out Expr expression) {
+        parseMultiplicative(out expression);
 
-        while current().kind == "+" || current().kind == "-" {
-            let operator = current().kind;
+        let token = Token {};
+        current(out token);
+
+        while token.kind == "+" || token.kind == "-" {
+            let operator = token.kind;
             position = position + 1;
-            let right = parseMultiplicative();
+
+            let right = NumberExpr { value = 0 };
+            parseMultiplicative(out right);
+
             expression = BinaryExpr { left = expression, operator, right };
+            current(out token);
         }
-
-        return expression;
     }
 
-    parseMultiplicative() {
-        let expression = parseUnary();
+    parseMultiplicative(out Expr expression) {
+        parseUnary(out expression);
 
-        while current().kind == "*" || current().kind == "/" {
-            let operator = current().kind;
+        let token = Token {};
+        current(out token);
+
+        while token.kind == "*" || token.kind == "/" {
+            let operator = token.kind;
             position = position + 1;
-            let right = parseUnary();
+
+            let right = NumberExpr { value = 0 };
+            parseUnary(out right);
+
             expression = BinaryExpr { left = expression, operator, right };
+            current(out token);
         }
-
-        return expression;
     }
 
-    parseUnary() {
-        if match("+") {
-            return parseUnary();
-        }
+    parseUnary(out Expr expression) {
+        let matched = false;
 
-        if match("-") {
-            return UnaryExpr { operator = "-", right = parseUnary() };
+        match("+", out matched);
+        if matched {
+            parseUnary(out expression);
+        } else {
+            match("-", out matched);
+            if matched {
+                let right = NumberExpr { value = 0 };
+                parseUnary(out right);
+                expression = UnaryExpr { operator = "-", right };
+            } else {
+                parsePrimary(out expression);
+            }
         }
-
-        return parsePrimary();
     }
 
-    parsePrimary() {
-        if current().kind == "number" {
-            let value = current().value;
+    parsePrimary(out Expr expression) {
+        let token = Token {};
+        current(out token);
+
+        if token.kind == "number" {
             position = position + 1;
-            return NumberExpr { value };
-        }
+            expression = NumberExpr { value = token.value };
+        } else {
+            let matched = false;
+            match("(", out matched);
 
-        if match("(") {
-            let expression = parseExpression();
-            expect(")");
-            return expression;
+            if matched {
+                parseExpression(out expression);
+                let ok = false;
+                expect(")", out ok);
+            } else {
+                this.failed("expected number or '('", token);
+            }
         }
-
-        let message = "expected number or '('";
-        this.error(message, current());
-        fail message;
     }
 }
 
 class Calculator {
-    event calculated(input, result);
-    event failed(input, message);
+    event calculated(String input, Number result);
+    event failed(String input, String message);
 
-    evaluate(input) {
+    evaluate(String input) {
         let lexer = Lexer { input };
-        let tokens = lexer.scan();
 
-        let parser = Parser { tokens };
-        let ast = parser.parse();
-        let result = ast.eval();
+        lexer.failed += fn(String message, Number position) {
+            this.failed(input, message);
+        } once;
 
-        this.calculated(input, result);
-        events.emit("calculator.calculated", { input, result });
+        lexer.scanned += fn(TokenList tokens) {
+            let parser = Parser { tokens };
 
-        return result;
+            parser.failed += fn(String message, Token token) {
+                this.failed(input, message);
+            } once;
+
+            parser.parsed += fn(Expr ast) {
+                ast.evaluated += fn(Number result) {
+                    this.calculated(input, result);
+                    events.emit("calculator.calculated", { input, result });
+                } once;
+
+                ast.evaluate();
+            } once;
+
+            parser.parse();
+        } once;
+
+        lexer.scan();
     }
 }
 
 class ConsoleCalculator {
-    calculator;
-    prompt = "> ";
+    Calculator calculator;
+    String prompt = "> ";
+    Bool running = true;
 
     run() {
         io.println("New Lang calculator");
         io.println("Type an expression and press Enter. Type 'exit' to quit.");
 
-        while true {
+        calculator.calculated += fn(String input, Number result) {
+            io.println(result.toString());
+        };
+
+        calculator.failed += fn(String input, String message) {
+            io.println("error: " + message);
+        };
+
+        while running {
             io.print(prompt);
 
             let line = io.readLine();
 
             if line == null {
-                break;
+                running = false;
+                continue;
             }
 
             let input = line.trim();
@@ -274,45 +348,35 @@ class ConsoleCalculator {
             }
 
             if input == "exit" || input == "quit" {
-                break;
+                running = false;
+                continue;
             }
 
-            try {
-                let result = calculator.evaluate(input);
-                io.println(result.toString());
-            } catch error {
-                calculator.failed(input, error.message);
-                events.emit("calculator.failed", { input, message = error.message });
-                io.println("error: " + error.message);
-            }
+            calculator.evaluate(input);
         }
     }
 }
 
 class CalculatorLogging {
-    attach(calculator) {
-        calculator.calculated += fn(input, result) {
+    attach(Calculator calculator) {
+        calculator.calculated += fn(String input, Number result) {
             events.emit("log", "calculated: " + input + " = " + result);
         };
 
-        calculator.failed += fn(input, message) {
+        calculator.failed += fn(String input, String message) {
             events.emit("log", "failed: " + input + ": " + message);
         };
     }
 }
 
-// Композиция объектов: базовый объект расширяется настройками консольного режима.
 let defaultCalculator = Calculator {};
 let console = ConsoleCalculator { calculator = defaultCalculator } + CalculatorLogging {};
 
-fn main(args) {
-    events.on("log", fn(message) {
-        // Для обычного калькулятора лог можно оставить отключенным.
+fn main(List<String> args) {
+    events.on("log", fn(String message) {
         // io.println("log: " + message);
     });
 
     console.attach(defaultCalculator);
     console.run();
-
-    return 0;
 }
