@@ -37,11 +37,11 @@ class Lexer {
         let start = position;
         let ch = '\0';
 
-        current(out ch);
+        current(ch);
 
         while ch.isDigit() || ch == '.' {
             advance();
-            current(out ch);
+            current(ch);
         }
 
         let text = input.slice(start, position);
@@ -52,7 +52,7 @@ class Lexer {
         let ch = '\0';
 
         while position < input.len() {
-            current(out ch);
+            current(ch);
 
             if ch.isWhitespace() {
                 advance();
@@ -61,7 +61,7 @@ class Lexer {
 
             if ch.isDigit() {
                 let number = Token {};
-                scanNumber(out number);
+                scanNumber(number);
                 output.items.push(number);
                 this.token(number);
                 continue;
@@ -167,7 +167,7 @@ class Parser {
 
     match(String kind, out Bool matched) {
         let token = Token {};
-        current(out token);
+        current(token);
 
         if token.kind == kind {
             position = position + 1;
@@ -178,11 +178,11 @@ class Parser {
     }
 
     expect(String kind, out Bool ok) {
-        match(kind, out ok);
+        match(kind, ok);
 
         if !ok {
             let token = Token {};
-            current(out token);
+            current(token);
             let message = "expected '" + kind + "', got '" + token.text + "'";
             this.failed(message, token);
         }
@@ -190,10 +190,10 @@ class Parser {
 
     parse() {
         let expression = NumberExpr { value = 0 };
-        parseExpression(out expression);
+        parseExpression(expression);
 
         let ok = false;
-        expect("eof", out ok);
+        expect("eof", ok);
 
         if ok {
             this.parsed(expression);
@@ -201,78 +201,78 @@ class Parser {
     }
 
     parseExpression(out Expr expression) {
-        parseAdditive(out expression);
+        parseAdditive(expression);
     }
 
     parseAdditive(out Expr expression) {
-        parseMultiplicative(out expression);
+        parseMultiplicative(expression);
 
         let token = Token {};
-        current(out token);
+        current(token);
 
         while token.kind == "+" || token.kind == "-" {
             let operator = token.kind;
             position = position + 1;
 
             let right = NumberExpr { value = 0 };
-            parseMultiplicative(out right);
+            parseMultiplicative(right);
 
             expression = BinaryExpr { left = expression, operator, right };
-            current(out token);
+            current(token);
         }
     }
 
     parseMultiplicative(out Expr expression) {
-        parseUnary(out expression);
+        parseUnary(expression);
 
         let token = Token {};
-        current(out token);
+        current(token);
 
         while token.kind == "*" || token.kind == "/" {
             let operator = token.kind;
             position = position + 1;
 
             let right = NumberExpr { value = 0 };
-            parseUnary(out right);
+            parseUnary(right);
 
             expression = BinaryExpr { left = expression, operator, right };
-            current(out token);
+            current(token);
         }
     }
 
     parseUnary(out Expr expression) {
         let matched = false;
 
-        match("+", out matched);
+        match("+", matched);
         if matched {
-            parseUnary(out expression);
+            parseUnary(expression);
         } else {
-            match("-", out matched);
+            match("-", matched);
             if matched {
                 let right = NumberExpr { value = 0 };
-                parseUnary(out right);
+                parseUnary(right);
                 expression = UnaryExpr { operator = "-", right };
             } else {
-                parsePrimary(out expression);
+                parsePrimary(expression);
             }
         }
     }
 
     parsePrimary(out Expr expression) {
         let token = Token {};
-        current(out token);
+        current(token);
 
         if token.kind == "number" {
             position = position + 1;
             expression = NumberExpr { value = token.value };
         } else {
             let matched = false;
-            match("(", out matched);
+            match("(", matched);
 
             if matched {
-                parseExpression(out expression);
+                parseExpression(expression);
                 let ok = false;
-                expect(")", out ok);
+                expect(")", ok);
             } else {
                 this.failed("expected number or '('", token);
             }
